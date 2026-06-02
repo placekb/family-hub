@@ -1,9 +1,17 @@
 {
   "name": "Family Hub",
   "short_name": "Family Hub",
+  "description": "A local-first family planner for calendar events, weekly dinners, tasks, and groceries.",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#f7f3ea",
-  "theme_color": "#f7f3ea",
-  "orientation": "landscape"
+  "background_color": "#f2eadb",
+  "theme_color": "#f2eadb",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
 }
