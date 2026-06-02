@@ -6,9 +6,9 @@ This is a static, local-first family planner that can be published with GitHub P
 
 - Monthly family calendar with recurring events
 - Weekly dinner planner with copy-last-week support
-- Household task list with assignees, due dates, and simple recurrence
-- Simple shared grocery checklist
-- Backup and restore for local data
+- Household task list with optional assignees, due dates, and simple recurrence
+- Simple shared checklist for groceries or other errands
+- Tabbed workspace to keep the planner from feeling crowded
 - Offline caching when hosted
 
 ## Files
@@ -40,4 +40,4 @@ This is a static, local-first family planner that can be published with GitHub P
 
 ## Data storage
 
-This version still stores data in the browser on each device. It now supports backup and restore, and it will migrate data from the older single-file version automatically on the same browser. It does not sync data between family devices yet.
+This version still stores data in the browser on each device, and it will migrate data from the older single-file version automatically on the same browser. It does not sync data between family devices yet.

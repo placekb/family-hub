@@ -19,16 +19,11 @@
   <div class="app">
     <header class="topbar">
       <div class="headline">
-        <p class="eyebrow">Family Hub</p>
-        <h1>Weekly planning that keeps dinner, chores, and the calendar in one place.</h1>
+        <h1>Family Hub</h1>
         <p class="small" id="dateLine"></p>
       </div>
 
       <div class="top-actions">
-        <button class="secondary" id="todayBtn" type="button">Today</button>
-        <button class="secondary" id="exportBtn" type="button">Backup</button>
-        <button class="secondary" id="importBtn" type="button">Restore</button>
-        <input id="importFile" class="hidden" type="file" accept="application/json">
         <button id="newBtn" type="button">+ Event</button>
       </div>
     </header>
@@ -65,82 +60,65 @@
         <div class="panel-head">
           <div>
             <p class="panel-kicker">Today</p>
-            <h2>What is happening</h2>
+            <h2>Today's events</h2>
           </div>
         </div>
 
-        <div class="tonight-card">
-          <div>
-            <p class="small">Tonight's dinner</p>
-            <h3 id="tonightTitle">No dinner planned</h3>
-            <p class="small" id="tonightMeta">Plan dinner for tonight in the weekly meal plan.</p>
-          </div>
-
-          <button id="planTonightBtn" type="button">Plan dinner</button>
-        </div>
-
-        <div class="overview-columns">
-          <section class="mini-list">
-            <h3>Today's events</h3>
-            <div id="todayEvents"></div>
-          </section>
-
-          <section class="mini-list">
-            <h3>Tasks to tackle</h3>
-            <div id="todayTasks"></div>
-          </section>
-        </div>
+        <div class="list compact-list" id="todayEvents"></div>
       </section>
 
-      <section class="panel meals-panel">
-        <div class="panel-head">
+      <section class="panel workspace-panel">
+        <div class="panel-head workspace-head">
           <div>
-            <p class="panel-kicker">Meals</p>
-            <h2>Weekly dinner plan</h2>
+            <p class="panel-kicker">Lists</p>
+            <h2 id="workspaceTitle">Dinner plan</h2>
           </div>
 
-          <div class="stack-actions">
-            <button class="secondary" id="copyWeekBtn" type="button">Copy last week</button>
-            <button class="secondary" id="clearWeekBtn" type="button">Clear week</button>
-          </div>
-        </div>
-
-        <div class="meal-week-bar">
-          <button class="secondary" id="prevWeekBtn" type="button" aria-label="Previous week">&lt;</button>
-          <div id="weekLabel"></div>
-          <button class="secondary" id="nextWeekBtn" type="button" aria-label="Next week">&gt;</button>
-        </div>
-
-        <div class="meal-list" id="mealList"></div>
-      </section>
-
-      <section class="panel tasks-panel">
-        <div class="panel-head">
-          <div>
-            <p class="panel-kicker">Tasks</p>
-            <h2>Household tasks</h2>
-          </div>
-
-          <button id="newTaskBtn" type="button">+ Task</button>
-        </div>
-
-        <div class="list" id="taskList"></div>
-      </section>
-
-      <section class="panel groceries-panel">
-        <div class="panel-head">
-          <div>
-            <p class="panel-kicker">Groceries</p>
-            <h2>Simple shared list</h2>
+          <div class="tab-strip" role="tablist" aria-label="Planner sections">
+            <button class="tab-button active" id="mealsTab" data-tab="meals" type="button" role="tab" aria-selected="true">Dinner plan</button>
+            <button class="tab-button" id="tasksTab" data-tab="tasks" type="button" role="tab" aria-selected="false">Household tasks</button>
+            <button class="tab-button" id="groceriesTab" data-tab="groceries" type="button" role="tab" aria-selected="false">Shared list</button>
           </div>
         </div>
 
-        <div class="list" id="groceryList"></div>
+        <section class="tab-panel" id="mealsPanel" data-panel="meals" role="tabpanel" aria-labelledby="mealsTab">
+          <div class="section-toolbar section-toolbar-split">
+            <div class="meal-week-bar">
+              <button class="secondary" id="prevWeekBtn" type="button" aria-label="Previous week">&lt;</button>
+              <div id="weekLabel"></div>
+              <button class="secondary" id="nextWeekBtn" type="button" aria-label="Next week">&gt;</button>
+            </div>
 
-        <form class="quick-add" id="groceryForm">
-          <input id="groceryInput" type="text" autocomplete="off" placeholder="Add grocery item">
-          <button type="submit">Add</button>
-        </form>
+            <div class="stack-actions">
+              <button class="secondary" id="copyWeekBtn" type="button">Copy last week</button>
+              <button class="secondary" id="clearWeekBtn" type="button">Clear week</button>
+            </div>
+          </div>
+
+          <div class="meal-list" id="mealList"></div>
+        </section>
+
+        <section class="tab-panel hidden" id="tasksPanel" data-panel="tasks" role="tabpanel" aria-labelledby="tasksTab">
+          <div class="section-toolbar">
+            <p class="small">Keep recurring chores and one-off household tasks in one place.</p>
+            <button id="newTaskBtn" type="button">+ Task</button>
+          </div>
+
+          <div class="list" id="taskList"></div>
+        </section>
+
+        <section class="tab-panel hidden" id="groceriesPanel" data-panel="groceries" role="tabpanel" aria-labelledby="groceriesTab">
+          <div class="section-toolbar">
+            <p class="small">A simple shared checklist for groceries and any other quick family errands.</p>
+          </div>
+
+          <div class="list" id="groceryList"></div>
+
+          <form class="quick-add" id="groceryForm">
+            <input id="groceryInput" type="text" autocomplete="off" placeholder="Add list item">
+            <button type="submit">Add</button>
+          </form>
+        </section>
       </section>
     </main>
   </div>
@@ -277,9 +255,9 @@
     </div>
 
     <div class="field full">
-      <label for="mealIngredients">Ingredients to add</label>
+      <label for="mealIngredients">Items to add</label>
       <textarea id="mealIngredients" placeholder="One per line or comma separated"></textarea>
-      <p class="small">Use "Save + groceries" to push these items into the simple grocery list.</p>
+      <p class="small">Use "Save + list" to push these items into the shared list.</p>
     </div>
   </div>
 
@@ -288,7 +266,7 @@
 
     <div class="right-actions">
       <button class="secondary" id="mealCancelBtn" type="button">Cancel</button>
-      <button class="secondary" id="mealAddGroceriesBtn" type="button">Save + groceries</button>
+      <button class="secondary" id="mealAddGroceriesBtn" type="button">Save + list</button>
       <button id="mealSaveBtn" type="button">Save dinner</button>
     </div>
   </div>

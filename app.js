@@ -3,25 +3,25 @@ const LEGACY_KEY = "familyHubGitHub_v1";
 const PEOPLE = ["Family", "Ben", "Wife", "Kids"];
 const EVENT_REPEAT_TYPES = new Set(["none", "daily", "weekly", "monthly", "yearly"]);
 const TASK_REPEAT_TYPES = new Set(["none", "daily", "weekly", "monthly"]);
+const WORKSPACE_TITLES = {
+  meals: "Dinner plan",
+  tasks: "Household tasks",
+  groceries: "Shared list"
+};
 
 const $ = (id) => document.getElementById(id);
 
 const dom = {
   dateLine: $("dateLine"),
-  todayBtn: $("todayBtn"),
-  exportBtn: $("exportBtn"),
-  importBtn: $("importBtn"),
-  importFile: $("importFile"),
   newBtn: $("newBtn"),
   monthLabel: $("monthLabel"),
   prevMonth: $("prevMonth"),
   nextMonth: $("nextMonth"),
   calendarGrid: $("calendarGrid"),
-  tonightTitle: $("tonightTitle"),
-  tonightMeta: $("tonightMeta"),
-  planTonightBtn: $("planTonightBtn"),
   todayEvents: $("todayEvents"),
-  todayTasks: $("todayTasks"),
+  workspaceTitle: $("workspaceTitle"),
+  tabButtons: [...document.querySelectorAll(".tab-button")],
+  tabPanels: [...document.querySelectorAll(".tab-panel")],
   weekLabel: $("weekLabel"),
   prevWeekBtn: $("prevWeekBtn"),
   nextWeekBtn: $("nextWeekBtn"),
@@ -84,23 +84,17 @@ const dom = {
 let state = loadState();
 let monthView = startOfMonth(new Date());
 let mealWeekView = startOfWeek(new Date());
+let activeTab = "meals";
 
 bindEvents();
 render();
 registerServiceWorker();
 
 function bindEvents() {
-  dom.todayBtn.addEventListener("click", () => {
-    const now = new Date();
-    monthView = startOfMonth(now);
-    mealWeekView = startOfWeek(now);
-    render();
-  });
-
-  dom.exportBtn.addEventListener("click", exportBackup);
-  dom.importBtn.addEventListener("click", () => dom.importFile.click());
-  dom.importFile.addEventListener("change", importBackup);
   dom.newBtn.addEventListener("click", () => openEventDialog({ date: ymd(new Date()) }));
+  dom.tabButtons.forEach((button) => {
+    button.addEventListener("click", () => setActiveTab(button.dataset.tab));
+  });
 
   dom.prevMonth.addEventListener("click", () => {
     monthView = addMonths(monthView, -1);
@@ -114,17 +108,16 @@ function bindEvents() {
 
   dom.prevWeekBtn.addEventListener("click", () => {
     mealWeekView = addDays(mealWeekView, -7);
-    renderMeals();
+    renderWorkspace();
   });
 
   dom.nextWeekBtn.addEventListener("click", () => {
     mealWeekView = addDays(mealWeekView, 7);
-    renderMeals();
+    renderWorkspace();
   });
 
   dom.copyWeekBtn.addEventListener("click", copyPreviousWeekMeals);
   dom.clearWeekBtn.addEventListener("click", clearCurrentWeekMeals);
-  dom.planTonightBtn.addEventListener("click", () => openMealDialog(getMealByDate(ymd(new Date())) || { date: ymd(new Date()) }));
   dom.newTaskBtn.addEventListener("click", () => openTaskDialog());
 
   dom.groceryForm.addEventListener("submit", (event) => {
@@ -367,9 +360,7 @@ function render() {
 
   renderCalendar();
   renderOverview();
-  renderMeals();
-  renderTasks();
-  renderGroceries();
+  renderWorkspace();
 }
 
 function renderCalendar() {
@@ -421,54 +412,45 @@ function renderCalendar() {
 
 function renderOverview() {
   const today = new Date();
-  const todayString = ymd(today);
-  const tonight = getMealByDate(todayString);
-  const openTasks = [...state.tasks].filter((task) => !task.done).sort(compareTasks).slice(0, 5);
   const todayEvents = eventsForDate(today);
-
-  if (tonight && tonight.name) {
-    dom.tonightTitle.textContent = tonight.name;
-    dom.tonightMeta.textContent = tonight.notes || ingredientsSummary(tonight.ingredients) || "Dinner is planned for tonight.";
-    dom.planTonightBtn.textContent = "Edit dinner";
-  } else {
-    dom.tonightTitle.textContent = "No dinner planned";
-    dom.tonightMeta.textContent = "Add tonight's meal so the rest of the week starts to take shape.";
-    dom.planTonightBtn.textContent = "Plan dinner";
-  }
 
   dom.todayEvents.innerHTML = todayEvents.length
     ? todayEvents
         .map(
           (event) => `
-            <div class="mini-item">
-              <strong>${escapeHtml(event.title)}</strong>
-              <div class="item-meta">
-                <span class="tag">${escapeHtml(formatTimeLabel(event.time) || "All day")}</span>
-                <span class="tag">${escapeHtml(event.who)}</span>
-                ${event.repeat.type !== "none" ? `<span class="tag">${escapeHtml(repeatSummary(event.repeat.type))}</span>` : ""}
+            <div class="list-item compact-item">
+              <div class="item-copy">
+                <span class="item-title">${escapeHtml(event.title)}</span>
+                <span class="item-meta">
+                  <span class="tag">${escapeHtml(formatTimeLabel(event.time) || "All day")}</span>
+                  <span class="tag">${escapeHtml(event.who)}</span>
+                  ${event.repeat.type !== "none" ? `<span class="tag">${escapeHtml(repeatSummary(event.repeat.type))}</span>` : ""}
+                </span>
+                ${event.notes ? `<p class="event-note">${escapeHtml(event.notes)}</p>` : ""}
               </div>
             </div>
           `
         )
         .join("")
     : `<div class="empty">No events on the calendar today.</div>`;
+}
 
-  dom.todayTasks.innerHTML = openTasks.length
-    ? openTasks
-        .map(
-          (task) => `
-            <div class="mini-item">
-              <strong>${escapeHtml(task.title)}</strong>
-              <div class="item-meta">
-                ${task.assignee ? `<span class="tag">${escapeHtml(task.assignee)}</span>` : ""}
-                ${task.dueDate ? taskDueChip(task.dueDate) : `<span class="tag">No due date</span>`}
-                ${task.repeat.type !== "none" ? `<span class="tag">${escapeHtml(repeatSummary(task.repeat.type))}</span>` : ""}
-              </div>
-            </div>
-          `
-        )
-        .join("")
-    : `<div class="empty">No open tasks right now.</div>`;
+function renderWorkspace() {
+  dom.workspaceTitle.textContent = WORKSPACE_TITLES[activeTab];
+
+  dom.tabButtons.forEach((button) => {
+    const isActive = button.dataset.tab === activeTab;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
+
+  dom.tabPanels.forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.panel !== activeTab);
+  });
+
+  renderMeals();
+  renderTasks();
+  renderGroceries();
 }
 
 function renderMeals() {
@@ -511,7 +493,7 @@ function renderMeals() {
           </button>
           ${
             meal && ingredientsCount
-              ? `<button class="secondary small-button" type="button" data-action="add-meal-groceries" data-id="${escapeAttribute(meal.id)}">Add groceries</button>`
+              ? `<button class="secondary small-button" type="button" data-action="add-meal-groceries" data-id="${escapeAttribute(meal.id)}">Add to list</button>`
               : ""
           }
         </div>
@@ -527,23 +509,33 @@ function renderTasks() {
   dom.taskList.innerHTML = tasks.length
     ? tasks
         .map(
-          (task) => `
+          (task) => {
+            const metadata = [];
+            if (task.assignee) {
+              metadata.push(`<span class="tag">${escapeHtml(task.assignee)}</span>`);
+            }
+            if (task.dueDate) {
+              metadata.push(taskDueChip(task.dueDate));
+            }
+            if (task.repeat.type !== "none") {
+              metadata.push(`<span class="tag">${escapeHtml(repeatSummary(task.repeat.type))}</span>`);
+            }
+
+            return `
             <div class="list-item${task.done ? " done" : ""}">
               <label class="check-wrap">
                 <input type="checkbox" data-action="toggle-task" data-id="${escapeAttribute(task.id)}" ${task.done ? "checked" : ""}>
                 <span class="item-copy">
                   <span class="item-title">${escapeHtml(task.title)}</span>
-                  <span class="item-meta">
-                    ${task.assignee ? `<span class="tag">${escapeHtml(task.assignee)}</span>` : ""}
-                    ${task.dueDate ? taskDueChip(task.dueDate) : `<span class="tag">No due date</span>`}
-                    ${task.repeat.type !== "none" ? `<span class="tag">${escapeHtml(repeatSummary(task.repeat.type))}</span>` : ""}
-                  </span>
+                  ${metadata.length ? `<span class="item-meta">${metadata.join("")}</span>` : ""}
+                  ${task.notes ? `<p class="event-note">${escapeHtml(task.notes)}</p>` : ""}
                 </span>
               </label>
 
               <button class="secondary small-button" type="button" data-action="edit-task" data-id="${escapeAttribute(task.id)}">Edit</button>
             </div>
-          `
+          `;
+          }
         )
         .join("")
     : `<div class="empty">Add chores, routines, or one-off reminders here.</div>`;
@@ -568,7 +560,16 @@ function renderGroceries() {
           `
         )
         .join("")
-    : `<div class="empty">Keep this simple: quick adds, quick checkoffs, no extra fields.</div>`;
+    : `<div class="empty">Keep this simple: one shared list for groceries or other quick errands.</div>`;
+}
+
+function setActiveTab(tab) {
+  if (!WORKSPACE_TITLES[tab]) {
+    return;
+  }
+
+  activeTab = tab;
+  renderWorkspace();
 }
 
 function handleCalendarClick(event) {
@@ -605,12 +606,12 @@ function handleMealClick(event) {
 
     const added = addGroceriesFromText(meal.ingredients);
     if (!added) {
-      window.alert("No new grocery items were added.");
+      window.alert("No new list items were added.");
       return;
     }
 
     saveState();
-    window.alert(`Added ${added} grocery ${added === 1 ? "item" : "items"} from this dinner plan.`);
+    window.alert(`Added ${added} ${added === 1 ? "list item" : "list items"} from this dinner plan.`);
     return;
   }
 
@@ -841,7 +842,7 @@ function saveMeal(addGroceriesToo) {
   saveState();
 
   if (addGroceriesToo) {
-    window.alert(added ? `Added ${added} grocery ${added === 1 ? "item" : "items"} from this dinner.` : "No new grocery items were added.");
+    window.alert(added ? `Added ${added} ${added === 1 ? "list item" : "list items"} from this dinner.` : "No new list items were added.");
   }
 }
 
@@ -1193,7 +1194,7 @@ function splitGroceries(value) {
 
 function ingredientsSummary(value) {
   const count = splitGroceries(value).length;
-  return count ? `${count} grocery ${count === 1 ? "item" : "items"} saved with this meal.` : "";
+  return count ? `${count} ${count === 1 ? "list item" : "list items"} saved with this dinner.` : "";
 }
 
 function taskDueChip(dateString) {
