@@ -28,6 +28,18 @@
       </div>
     </header>
 
+    <section class="sync-strip hidden" id="syncStrip" aria-live="polite">
+      <div class="sync-meta">
+        <span class="sync-dot" id="syncDot" aria-hidden="true"></span>
+        <span id="syncLabel">Cloud sync is off.</span>
+      </div>
+
+      <div class="sync-actions">
+        <button class="secondary small-button hidden" id="seedCloudBtn" type="button">Upload this device data</button>
+        <button class="secondary small-button" id="signOutBtn" type="button">Sign out</button>
+      </div>
+    </section>
+
     <main class="layout">
       <section class="panel calendar-panel">
         <div class="panel-head panel-head-tight">
@@ -121,6 +133,31 @@
         </section>
       </section>
     </main>
+  </div>
+</div>
+
+<div class="auth-gate hidden" id="authGate">
+  <div class="auth-card">
+    <p class="panel-kicker">Cloud sync</p>
+    <h2>Use one shared family login on every device.</h2>
+    <p class="small" id="authMessage">Sign in with the same email and password on your phone and your computer.</p>
+
+    <form class="auth-form" id="authForm">
+      <div class="field">
+        <label for="authEmail">Email</label>
+        <input id="authEmail" type="email" inputmode="email" autocomplete="email" placeholder="family@example.com" required>
+      </div>
+
+      <div class="field">
+        <label for="authPassword">Password</label>
+        <input id="authPassword" type="password" autocomplete="current-password" placeholder="Choose one family password" required>
+      </div>
+
+      <div class="auth-actions">
+        <button id="signInBtn" type="submit">Sign in</button>
+        <button class="secondary" id="signUpBtn" type="button">Create family login</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -291,35 +328,13 @@
     </div>
 
     <div class="field">
-      <label for="taskAssignee">Assignee</label>
-      <select id="taskAssignee">
-        <option value="">Unassigned</option>
-        <option>Family</option>
-        <option>Ben</option>
-        <option>Wife</option>
-        <option>Kids</option>
-      </select>
-    </div>
-
-    <div class="field">
       <label for="taskDueDate">Due date</label>
       <input id="taskDueDate" type="date">
-    </div>
-
-    <div class="field">
-      <label for="taskRepeatType">Repeat</label>
-      <select id="taskRepeatType">
-        <option value="none">Does not repeat</option>
-        <option value="daily">Daily</option>
-        <option value="weekly">Weekly</option>
-        <option value="monthly">Monthly</option>
-      </select>
     </div>
 
     <div class="field full">
       <label for="taskNotes">Notes</label>
       <textarea id="taskNotes" placeholder="Anything helpful for whoever is picking this up"></textarea>
-      <p class="small">Recurring tasks roll forward to the next due date when checked off.</p>
     </div>
   </div>
 
@@ -333,6 +348,8 @@
   </div>
 </dialog>
 
+<script src="supabase-config.js"></script>
+<script src="supabase-api.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

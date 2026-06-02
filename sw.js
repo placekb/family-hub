@@ -1,9 +1,11 @@
-const CACHE_NAME = "family-hub-v4";
+const CACHE_NAME = "family-hub-v6";
 const CORE_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./supabase-config.js",
+  "./supabase-api.js",
   "./manifest.json",
   "./icon.svg"
 ];

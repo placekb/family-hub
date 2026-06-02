@@ -1,19 +1,31 @@
-const STORAGE_KEY = "familyHub_v2";
+const LOCAL_STORAGE_KEY = "familyHub_v2";
+const REMOTE_CACHE_KEY = "familyHub_cloudCache_v1";
 const LEGACY_KEY = "familyHubGitHub_v1";
 const PEOPLE = ["Family", "Ben", "Wife", "Kids"];
 const EVENT_REPEAT_TYPES = new Set(["none", "daily", "weekly", "monthly", "yearly"]);
-const TASK_REPEAT_TYPES = new Set(["none", "daily", "weekly", "monthly"]);
 const WORKSPACE_TITLES = {
   meals: "Dinner plan",
   tasks: "Household tasks",
   groceries: "Shared list"
 };
+const DEFAULT_AUTH_MESSAGE = "Sign in with the same email and password on your phone and your computer.";
 
 const $ = (id) => document.getElementById(id);
 
 const dom = {
   dateLine: $("dateLine"),
   newBtn: $("newBtn"),
+  syncStrip: $("syncStrip"),
+  syncDot: $("syncDot"),
+  syncLabel: $("syncLabel"),
+  seedCloudBtn: $("seedCloudBtn"),
+  signOutBtn: $("signOutBtn"),
+  authGate: $("authGate"),
+  authForm: $("authForm"),
+  authEmail: $("authEmail"),
+  authPassword: $("authPassword"),
+  authMessage: $("authMessage"),
+  signUpBtn: $("signUpBtn"),
   monthLabel: $("monthLabel"),
   prevMonth: $("prevMonth"),
   nextMonth: $("nextMonth"),
@@ -71,9 +83,7 @@ const dom = {
   taskDialogTitle: $("taskDialogTitle"),
   taskId: $("taskId"),
   taskTitle: $("taskTitle"),
-  taskAssignee: $("taskAssignee"),
   taskDueDate: $("taskDueDate"),
-  taskRepeatType: $("taskRepeatType"),
   taskNotes: $("taskNotes"),
   taskDeleteBtn: $("taskDeleteBtn"),
   taskCancelBtn: $("taskCancelBtn"),
@@ -81,17 +91,35 @@ const dom = {
   taskSaveBtn: $("taskSaveBtn")
 };
 
-let state = loadState();
+let state = normalizeState({});
+let localSeedState = normalizeState({});
 let monthView = startOfMonth(new Date());
 let mealWeekView = startOfWeek(new Date());
 let activeTab = "meals";
+let remoteRefreshTimer = null;
+let authSessionEpoch = 0;
+let syncRuntime = {
+  configured: false,
+  active: false,
+  session: null,
+  authUnsubscribe: null,
+  realtimeUnsubscribe: null,
+  cloudWasEmpty: false,
+  message: "Cloud sync is off.",
+  tone: "idle"
+};
 
 bindEvents();
-render();
+bootstrapApp();
 registerServiceWorker();
 
 function bindEvents() {
   dom.newBtn.addEventListener("click", () => openEventDialog({ date: ymd(new Date()) }));
+  dom.seedCloudBtn.addEventListener("click", seedCloudFromLocal);
+  dom.signOutBtn.addEventListener("click", signOutEverywhere);
+  dom.authForm.addEventListener("submit", signInWithFamilyLogin);
+  dom.signUpBtn.addEventListener("click", createFamilyLogin);
+
   dom.tabButtons.forEach((button) => {
     button.addEventListener("click", () => setActiveTab(button.dataset.tab));
   });
@@ -120,22 +148,7 @@ function bindEvents() {
   dom.clearWeekBtn.addEventListener("click", clearCurrentWeekMeals);
   dom.newTaskBtn.addEventListener("click", () => openTaskDialog());
 
-  dom.groceryForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const text = dom.groceryInput.value.trim();
-    if (!text) {
-      return;
-    }
-
-    state.groceries.push({
-      id: uid(),
-      text,
-      done: false
-    });
-
-    dom.groceryInput.value = "";
-    saveState();
-  });
+  dom.groceryForm.addEventListener("submit", addSharedListItem);
 
   dom.calendarGrid.addEventListener("click", handleCalendarClick);
   dom.mealList.addEventListener("click", handleMealClick);
@@ -164,14 +177,260 @@ function bindEvents() {
   dom.taskSaveBtn.addEventListener("click", saveTask);
 }
 
-function loadState() {
+async function bootstrapApp() {
+  localSeedState = loadLocalSeedState();
+  state = loadRemoteCacheState() || localSeedState;
+  render();
+
+  if (!window.familyHubSync || typeof window.familyHubSync.init !== "function") {
+    syncRuntime.message = "Cloud sync is unavailable in this build.";
+    updateSyncUI();
+    return;
+  }
+
   try {
-    const current = localStorage.getItem(STORAGE_KEY);
+    const initResult = await window.familyHubSync.init();
+    syncRuntime.configured = Boolean(initResult.configured);
+
+    if (!syncRuntime.configured) {
+      state = localSeedState;
+      syncRuntime.message = "Cloud sync is not configured. This device is using local data only.";
+      syncRuntime.tone = "idle";
+      render();
+      updateSyncUI();
+      return;
+    }
+
+    const authListener = window.familyHubSync.onAuthStateChange((_event, session) => {
+      handleAuthSession(session).catch((error) => handleSyncFailure(error, "Cloud sync could not refresh after the sign-in state changed."));
+    });
+
+    if (authListener && typeof authListener.unsubscribe === "function") {
+      syncRuntime.authUnsubscribe = authListener.unsubscribe;
+    }
+
+    const session = await window.familyHubSync.getSession();
+    await handleAuthSession(session);
+  } catch (error) {
+    handleSyncFailure(error, "Cloud sync could not start. The app is using local data on this device.");
+  }
+}
+
+async function handleAuthSession(session) {
+  const sessionEpoch = ++authSessionEpoch;
+  syncRuntime.session = session || null;
+  syncRuntime.active = Boolean(session);
+  clearTimeout(remoteRefreshTimer);
+  remoteRefreshTimer = null;
+
+  if (syncRuntime.realtimeUnsubscribe) {
+    syncRuntime.realtimeUnsubscribe();
+    syncRuntime.realtimeUnsubscribe = null;
+  }
+
+  if (!syncRuntime.active) {
+    state = loadRemoteCacheState() || localSeedState;
+    syncRuntime.message = "Sign in with the same family login on every device to keep everything in sync.";
+    syncRuntime.tone = "idle";
+    setAuthMessage(DEFAULT_AUTH_MESSAGE);
+    render();
+    updateSyncUI();
+    return;
+  }
+
+  syncRuntime.message = `Loading cloud data for ${session.user.email}.`;
+  syncRuntime.tone = "working";
+  setAuthMessage(`Signed in as ${session.user.email}.`);
+  updateSyncUI();
+
+  await refreshRemoteState({ authEpoch: sessionEpoch });
+  if (sessionEpoch !== authSessionEpoch || !syncRuntime.active) {
+    return;
+  }
+
+  const realtimeListener = window.familyHubSync.subscribeToChanges(() => {
+    clearTimeout(remoteRefreshTimer);
+    remoteRefreshTimer = window.setTimeout(() => {
+      if (sessionEpoch !== authSessionEpoch || !syncRuntime.active) {
+        return;
+      }
+
+      refreshRemoteState({ keepMessage: true, authEpoch: sessionEpoch }).catch((error) => handleSyncFailure(error, "Cloud changes could not be refreshed. Showing the last saved data."));
+    }, 160);
+  });
+
+  if (sessionEpoch !== authSessionEpoch || !syncRuntime.active) {
+    if (realtimeListener && typeof realtimeListener.unsubscribe === "function") {
+      realtimeListener.unsubscribe();
+    }
+    return;
+  }
+
+  if (realtimeListener && typeof realtimeListener.unsubscribe === "function") {
+    syncRuntime.realtimeUnsubscribe = realtimeListener.unsubscribe;
+  }
+
+  syncRuntime.message = `Cloud sync is on for ${session.user.email}.`;
+  syncRuntime.tone = "ok";
+  updateSyncUI();
+}
+
+async function refreshRemoteState(options = {}) {
+  const requestEpoch = options.authEpoch ?? authSessionEpoch;
+  const remoteState = normalizeState(await window.familyHubSync.fetchState());
+  if (requestEpoch !== authSessionEpoch || !syncRuntime.active) {
+    return remoteState;
+  }
+
+  syncRuntime.cloudWasEmpty = !hasAnyData(remoteState);
+  state = remoteState;
+  cacheRemoteState(state);
+  render();
+  if (!options.keepMessage && syncRuntime.session) {
+    syncRuntime.message = `Cloud sync is on for ${syncRuntime.session.user.email}.`;
+    syncRuntime.tone = "ok";
+  }
+  updateSyncUI();
+}
+
+function handleSyncFailure(error, message) {
+  console.error(error);
+  syncRuntime.message = message;
+  syncRuntime.tone = "error";
+  updateSyncUI();
+}
+
+function updateSyncUI() {
+  const shouldShowAuthGate = syncRuntime.configured && !syncRuntime.active;
+  const shouldShowSyncStrip = syncRuntime.configured && syncRuntime.active;
+  const canSeedCloud = shouldShowSyncStrip && syncRuntime.cloudWasEmpty && hasAnyData(localSeedState);
+
+  dom.authGate.classList.toggle("hidden", !shouldShowAuthGate);
+  dom.syncStrip.classList.toggle("hidden", !shouldShowSyncStrip);
+  dom.seedCloudBtn.classList.toggle("hidden", !canSeedCloud);
+  dom.syncLabel.textContent = syncRuntime.message;
+
+  dom.syncDot.classList.remove("ok", "working", "error");
+  if (syncRuntime.tone === "ok") {
+    dom.syncDot.classList.add("ok");
+  } else if (syncRuntime.tone === "working") {
+    dom.syncDot.classList.add("working");
+  } else if (syncRuntime.tone === "error") {
+    dom.syncDot.classList.add("error");
+  }
+}
+
+async function signInWithFamilyLogin(event) {
+  event.preventDefault();
+  if (!syncRuntime.configured) {
+    return;
+  }
+
+  const email = dom.authEmail.value.trim();
+  const password = dom.authPassword.value;
+  if (!email || !password) {
+    setAuthMessage("Enter the family email and password first.");
+    return;
+  }
+
+  try {
+    setAuthMessage("Signing in...");
+    await window.familyHubSync.signIn(email, password);
+    setAuthMessage("Signed in. Loading shared family data...");
+    dom.authPassword.value = "";
+  } catch (error) {
+    console.error(error);
+    setAuthMessage(error.message || "Sign-in failed.");
+  }
+}
+
+async function createFamilyLogin() {
+  if (!syncRuntime.configured) {
+    return;
+  }
+
+  const email = dom.authEmail.value.trim();
+  const password = dom.authPassword.value;
+  if (!email || !password) {
+    setAuthMessage("Enter the family email and password first.");
+    return;
+  }
+
+  try {
+    setAuthMessage("Creating the shared family login...");
+    const result = await window.familyHubSync.signUp(email, password);
+    dom.authPassword.value = "";
+    if (!result.session) {
+      setAuthMessage("Family login created. If email confirmation is enabled in Supabase, confirm the email first and then sign in.");
+    } else {
+      setAuthMessage("Family login created. Loading shared family data...");
+    }
+  } catch (error) {
+    console.error(error);
+    setAuthMessage(error.message || "Could not create the family login.");
+  }
+}
+
+async function signOutEverywhere() {
+  if (!syncRuntime.active) {
+    return;
+  }
+
+  try {
+    await window.familyHubSync.signOut();
+    dom.authPassword.value = "";
+    setAuthMessage(DEFAULT_AUTH_MESSAGE);
+    syncRuntime.message = "Signed out. Sign in again to resume cloud sync.";
+    syncRuntime.tone = "idle";
+    updateSyncUI();
+  } catch (error) {
+    handleSyncFailure(error, "Could not sign out right now.");
+  }
+}
+
+function setAuthMessage(message) {
+  dom.authMessage.textContent = message;
+}
+
+async function seedCloudFromLocal() {
+  if (!syncRuntime.active) {
+    return;
+  }
+
+  if (!hasAnyData(localSeedState)) {
+    window.alert("This device does not have any local data to upload.");
+    return;
+  }
+
+  if (!window.confirm("Upload this device's local calendar, dinners, tasks, and shared list to the cloud?")) {
+    return;
+  }
+
+  try {
+    const seedEpoch = authSessionEpoch;
+    syncRuntime.message = "Uploading this device's data to the cloud...";
+    syncRuntime.tone = "working";
+    updateSyncUI();
+    await window.familyHubSync.replaceAllState(localSeedState);
+    syncRuntime.cloudWasEmpty = false;
+    await refreshRemoteState({ authEpoch: seedEpoch });
+    if (seedEpoch === authSessionEpoch && syncRuntime.active) {
+      clearLocalSeedState();
+      updateSyncUI();
+    }
+  } catch (error) {
+    handleSyncFailure(error, "The device data could not be uploaded to the cloud.");
+  }
+}
+
+function loadLocalSeedState() {
+  try {
+    const current = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (current) {
       return normalizeState(JSON.parse(current));
     }
   } catch (error) {
-    console.warn("Could not read current Family Hub data.", error);
+    console.warn("Could not read the current local Family Hub data.", error);
   }
 
   try {
@@ -181,7 +440,7 @@ function loadState() {
         ...JSON.parse(legacy),
         meals: []
       });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(migrated));
       return migrated;
     }
   } catch (error) {
@@ -191,9 +450,60 @@ function loadState() {
   return normalizeState({});
 }
 
+function loadRemoteCacheState() {
+  try {
+    const cached = localStorage.getItem(REMOTE_CACHE_KEY);
+    return cached ? normalizeState(JSON.parse(cached)) : null;
+  } catch (error) {
+    console.warn("Could not read the cached cloud Family Hub data.", error);
+    return null;
+  }
+}
+
+function saveLocalState() {
+  state = normalizeState(state);
+  localSeedState = normalizeState(state);
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn("Could not save the local Family Hub data.", error);
+  }
+  render();
+}
+
+function cacheRemoteState(nextState) {
+  try {
+    localStorage.setItem(REMOTE_CACHE_KEY, JSON.stringify(normalizeState(nextState)));
+  } catch (error) {
+    console.warn("Could not cache the cloud Family Hub data.", error);
+  }
+}
+
+function clearLocalSeedState() {
+  localSeedState = normalizeState({});
+  try {
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_KEY);
+  } catch (error) {
+    console.warn("Could not clear the local Family Hub seed data.", error);
+  }
+}
+
+function hasAnyData(candidate) {
+  return Boolean(
+    candidate &&
+    (
+      candidate.events.length ||
+      candidate.tasks.length ||
+      candidate.groceries.length ||
+      candidate.meals.length
+    )
+  );
+}
+
 function normalizeState(input = {}) {
   const normalized = {
-    version: 2,
+    version: 3,
     events: Array.isArray(input.events) ? input.events.map(normalizeEvent).filter(Boolean) : [],
     tasks: Array.isArray(input.tasks) ? input.tasks.map(normalizeTask).filter(Boolean) : [],
     groceries: Array.isArray(input.groceries) ? input.groceries.map(normalizeGrocery).filter(Boolean) : [],
@@ -266,24 +576,10 @@ function normalizeTask(task) {
   return {
     id: String(source.id || uid()),
     title,
-    assignee: PEOPLE.includes(source.assignee) ? source.assignee : "",
-    dueDate: sanitizeDateString(source.dueDate),
+    dueDate: sanitizeDateString(source.dueDate || source.due_date),
     notes: String(source.notes || "").trim(),
-    done: Boolean(source.done),
-    repeat: normalizeTaskRepeat(source.repeat)
+    done: Boolean(source.done)
   };
-}
-
-function normalizeTaskRepeat(repeat) {
-  if (!repeat) {
-    return { type: "none" };
-  }
-
-  if (typeof repeat === "string") {
-    return { type: TASK_REPEAT_TYPES.has(repeat) ? repeat : "none" };
-  }
-
-  return { type: TASK_REPEAT_TYPES.has(repeat.type) ? repeat.type : "none" };
 }
 
 function normalizeGrocery(item) {
@@ -344,12 +640,6 @@ function sanitizeTimeString(value) {
   return value;
 }
 
-function saveState() {
-  state = normalizeState(state);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  render();
-}
-
 function render() {
   const now = new Date();
   dom.dateLine.textContent = now.toLocaleDateString(undefined, {
@@ -361,6 +651,7 @@ function render() {
   renderCalendar();
   renderOverview();
   renderWorkspace();
+  updateSyncUI();
 }
 
 function renderCalendar() {
@@ -493,7 +784,7 @@ function renderMeals() {
           </button>
           ${
             meal && ingredientsCount
-              ? `<button class="secondary small-button" type="button" data-action="add-meal-groceries" data-id="${escapeAttribute(meal.id)}">Add to list</button>`
+              ? `<button class="secondary small-button" type="button" data-action="add-meal-list" data-id="${escapeAttribute(meal.id)}">Add to list</button>`
               : ""
           }
         </div>
@@ -509,33 +800,20 @@ function renderTasks() {
   dom.taskList.innerHTML = tasks.length
     ? tasks
         .map(
-          (task) => {
-            const metadata = [];
-            if (task.assignee) {
-              metadata.push(`<span class="tag">${escapeHtml(task.assignee)}</span>`);
-            }
-            if (task.dueDate) {
-              metadata.push(taskDueChip(task.dueDate));
-            }
-            if (task.repeat.type !== "none") {
-              metadata.push(`<span class="tag">${escapeHtml(repeatSummary(task.repeat.type))}</span>`);
-            }
-
-            return `
+          (task) => `
             <div class="list-item${task.done ? " done" : ""}">
               <label class="check-wrap">
                 <input type="checkbox" data-action="toggle-task" data-id="${escapeAttribute(task.id)}" ${task.done ? "checked" : ""}>
                 <span class="item-copy">
                   <span class="item-title">${escapeHtml(task.title)}</span>
-                  ${metadata.length ? `<span class="item-meta">${metadata.join("")}</span>` : ""}
+                  ${task.dueDate ? `<span class="item-meta">${taskDueChip(task.dueDate)}</span>` : ""}
                   ${task.notes ? `<p class="event-note">${escapeHtml(task.notes)}</p>` : ""}
                 </span>
               </label>
 
               <button class="secondary small-button" type="button" data-action="edit-task" data-id="${escapeAttribute(task.id)}">Edit</button>
             </div>
-          `;
-          }
+          `
         )
         .join("")
     : `<div class="empty">Add chores, routines, or one-off reminders here.</div>`;
@@ -591,27 +869,21 @@ function handleCalendarClick(event) {
   }
 }
 
-function handleMealClick(event) {
+async function handleMealClick(event) {
   const target = event.target.closest("[data-action]");
   if (!target) {
     return;
   }
 
-  if (target.dataset.action === "add-meal-groceries") {
+  if (target.dataset.action === "add-meal-list") {
     event.stopPropagation();
     const meal = state.meals.find((item) => item.id === target.dataset.id);
     if (!meal) {
       return;
     }
 
-    const added = addGroceriesFromText(meal.ingredients);
-    if (!added) {
-      window.alert("No new list items were added.");
-      return;
-    }
-
-    saveState();
-    window.alert(`Added ${added} ${added === 1 ? "list item" : "list items"} from this dinner plan.`);
+    const added = await addItemsToSharedList(meal.ingredients);
+    window.alert(added ? `Added ${added} ${added === 1 ? "list item" : "list items"} from this dinner plan.` : "No new list items were added.");
     return;
   }
 
@@ -635,7 +907,7 @@ function handleTaskClick(event) {
   }
 }
 
-function handleTaskChange(event) {
+async function handleTaskChange(event) {
   const target = event.target.closest("[data-action='toggle-task']");
   if (!target) {
     return;
@@ -646,28 +918,51 @@ function handleTaskChange(event) {
     return;
   }
 
-  if (target.checked && task.repeat.type !== "none") {
-    const basis = parseDate(task.dueDate) || new Date();
-    task.dueDate = ymd(nextRepeatedDate(basis, task.repeat.type));
-    task.done = false;
-  } else {
-    task.done = target.checked;
+  const nextTask = normalizeTask({
+    ...task,
+    done: target.checked
+  });
+
+  if (syncRuntime.active) {
+    try {
+      const saved = normalizeTask(await window.familyHubSync.saveTask(nextTask));
+      upsertTaskInState(saved);
+      cacheRemoteState(state);
+      render();
+    } catch (error) {
+      handleSyncFailure(error, "That task could not be updated in the cloud.");
+      render();
+    }
+    return;
   }
 
-  saveState();
+  upsertTaskInState(nextTask);
+  saveLocalState();
 }
 
-function handleGroceryClick(event) {
+async function handleGroceryClick(event) {
   const target = event.target.closest("[data-action='delete-grocery']");
   if (!target) {
     return;
   }
 
+  if (syncRuntime.active) {
+    try {
+      await window.familyHubSync.deleteListItem(target.dataset.id);
+      state.groceries = state.groceries.filter((item) => item.id !== target.dataset.id);
+      cacheRemoteState(state);
+      render();
+    } catch (error) {
+      handleSyncFailure(error, "That list item could not be deleted from the cloud.");
+    }
+    return;
+  }
+
   state.groceries = state.groceries.filter((item) => item.id !== target.dataset.id);
-  saveState();
+  saveLocalState();
 }
 
-function handleGroceryChange(event) {
+async function handleGroceryChange(event) {
   const target = event.target.closest("[data-action='toggle-grocery']");
   if (!target) {
     return;
@@ -678,8 +973,56 @@ function handleGroceryChange(event) {
     return;
   }
 
-  grocery.done = target.checked;
-  saveState();
+  const nextItem = normalizeGrocery({
+    ...grocery,
+    done: target.checked
+  });
+
+  if (syncRuntime.active) {
+    try {
+      const saved = normalizeGrocery(await window.familyHubSync.saveListItem(nextItem));
+      upsertGroceryInState(saved);
+      cacheRemoteState(state);
+      render();
+    } catch (error) {
+      handleSyncFailure(error, "That list item could not be updated in the cloud.");
+      render();
+    }
+    return;
+  }
+
+  upsertGroceryInState(nextItem);
+  saveLocalState();
+}
+
+async function addSharedListItem(event) {
+  event.preventDefault();
+  const text = dom.groceryInput.value.trim();
+  if (!text) {
+    return;
+  }
+
+  const item = normalizeGrocery({
+    id: uid(),
+    text,
+    done: false
+  });
+
+  try {
+    if (syncRuntime.active) {
+      const saved = normalizeGrocery(await window.familyHubSync.saveListItem(item));
+      upsertGroceryInState(saved);
+      cacheRemoteState(state);
+      render();
+    } else {
+      state.groceries.push(item);
+      saveLocalState();
+    }
+
+    dom.groceryInput.value = "";
+  } catch (error) {
+    handleSyncFailure(error, "That list item could not be saved to the cloud.");
+  }
 }
 
 function openEventDialog(event = {}) {
@@ -744,7 +1087,7 @@ function syncWeeklyRepeatSelection() {
   });
 }
 
-function saveEvent() {
+async function saveEvent() {
   const title = dom.eventTitle.value.trim();
   const date = sanitizeDateString(dom.eventDate.value);
   if (!title || !date) {
@@ -768,36 +1111,54 @@ function saveEvent() {
     repeat.weekdays = [parseDate(date).getDay()];
   }
 
-  const nextEvent = {
+  const nextEvent = normalizeEvent({
     id: dom.eventId.value || uid(),
     title,
     date,
     time: sanitizeTimeString(dom.eventTime.value),
     who: PEOPLE.includes(dom.eventWho.value) ? dom.eventWho.value : "Family",
     notes: dom.eventNotes.value.trim(),
-    repeat: normalizeEventRepeat(repeat)
-  };
+    repeat
+  });
 
-  const existingIndex = state.events.findIndex((item) => item.id === nextEvent.id);
-  if (existingIndex >= 0) {
-    state.events[existingIndex] = nextEvent;
-  } else {
-    state.events.push(nextEvent);
+  try {
+    if (syncRuntime.active) {
+      const saved = normalizeEvent(await window.familyHubSync.saveEvent(nextEvent));
+      upsertEventInState(saved);
+      cacheRemoteState(state);
+      render();
+    } else {
+      upsertEventInState(nextEvent);
+      saveLocalState();
+    }
+
+    dom.eventDialog.close();
+  } catch (error) {
+    handleSyncFailure(error, "That calendar event could not be saved to the cloud.");
   }
-
-  dom.eventDialog.close();
-  saveState();
 }
 
-function deleteEvent() {
+async function deleteEvent() {
   const id = dom.eventId.value;
   if (!id) {
     return;
   }
 
-  state.events = state.events.filter((event) => event.id !== id);
-  dom.eventDialog.close();
-  saveState();
+  try {
+    if (syncRuntime.active) {
+      await window.familyHubSync.deleteEvent(id);
+      state.events = state.events.filter((event) => event.id !== id);
+      cacheRemoteState(state);
+      render();
+    } else {
+      state.events = state.events.filter((event) => event.id !== id);
+      saveLocalState();
+    }
+
+    dom.eventDialog.close();
+  } catch (error) {
+    handleSyncFailure(error, "That calendar event could not be deleted from the cloud.");
+  }
 }
 
 function openMealDialog(meal = {}) {
@@ -811,7 +1172,7 @@ function openMealDialog(meal = {}) {
   dom.mealDialog.showModal();
 }
 
-function saveMeal(addGroceriesToo) {
+async function saveMeal(addListItemsToo) {
   const name = dom.mealName.value.trim();
   const date = sanitizeDateString(dom.mealDate.value);
   const notes = dom.mealNotes.value.trim();
@@ -822,54 +1183,70 @@ function saveMeal(addGroceriesToo) {
     return;
   }
 
-  const meal = {
+  const meal = normalizeMeal({
     id: dom.mealId.value || uid(),
     date,
     name,
     notes,
     ingredients
-  };
+  });
 
-  state.meals = state.meals.filter((item) => item.id !== meal.id && item.date !== meal.date);
-  state.meals.push(meal);
+  try {
+    if (syncRuntime.active) {
+      const saved = normalizeMeal(await window.familyHubSync.saveMeal(meal));
+      upsertMealInState(saved);
+      cacheRemoteState(state);
+      render();
+    } else {
+      upsertMealInState(meal);
+      saveLocalState();
+    }
 
-  let added = 0;
-  if (addGroceriesToo) {
-    added = addGroceriesFromText(ingredients);
-  }
+    dom.mealDialog.close();
 
-  dom.mealDialog.close();
-  saveState();
-
-  if (addGroceriesToo) {
-    window.alert(added ? `Added ${added} ${added === 1 ? "list item" : "list items"} from this dinner.` : "No new list items were added.");
+    if (addListItemsToo) {
+      const added = await addItemsToSharedList(ingredients);
+      window.alert(added ? `Added ${added} ${added === 1 ? "list item" : "list items"} from this dinner.` : "No new list items were added.");
+    }
+  } catch (error) {
+    handleSyncFailure(error, "That dinner plan could not be saved to the cloud.");
   }
 }
 
-function deleteMeal() {
+async function deleteMeal() {
   const id = dom.mealId.value;
   if (!id) {
     return;
   }
 
-  state.meals = state.meals.filter((item) => item.id !== id);
-  dom.mealDialog.close();
-  saveState();
+  try {
+    if (syncRuntime.active) {
+      await window.familyHubSync.deleteMeal(id);
+      state.meals = state.meals.filter((item) => item.id !== id);
+      cacheRemoteState(state);
+      render();
+    } else {
+      state.meals = state.meals.filter((item) => item.id !== id);
+      saveLocalState();
+    }
+
+    dom.mealDialog.close();
+  } catch (error) {
+    handleSyncFailure(error, "That dinner plan could not be deleted from the cloud.");
+  }
 }
 
 function openTaskDialog(task = {}) {
   dom.taskDialogTitle.textContent = task.id ? "Edit task" : "Add task";
   dom.taskId.value = task.id || "";
   dom.taskTitle.value = task.title || "";
-  dom.taskAssignee.value = task.assignee || "";
   dom.taskDueDate.value = sanitizeDateString(task.dueDate);
-  dom.taskRepeatType.value = normalizeTaskRepeat(task.repeat).type;
   dom.taskNotes.value = task.notes || "";
   dom.taskDeleteBtn.classList.toggle("hidden", !task.id);
   dom.taskDialog.showModal();
 }
 
-function saveTask() {
+async function saveTask() {
   const title = dom.taskTitle.value.trim();
   if (!title) {
     dom.taskTitle.focus();
@@ -877,39 +1254,55 @@ function saveTask() {
   }
 
   const existing = state.tasks.find((item) => item.id === dom.taskId.value);
-  const nextTask = {
+  const nextTask = normalizeTask({
     id: dom.taskId.value || uid(),
     title,
-    assignee: PEOPLE.includes(dom.taskAssignee.value) ? dom.taskAssignee.value : "",
     dueDate: sanitizeDateString(dom.taskDueDate.value),
     notes: dom.taskNotes.value.trim(),
-    done: existing ? existing.done : false,
-    repeat: normalizeTaskRepeat({ type: dom.taskRepeatType.value })
-  };
+    done: existing ? existing.done : false
+  });
 
-  const index = state.tasks.findIndex((item) => item.id === nextTask.id);
-  if (index >= 0) {
-    state.tasks[index] = nextTask;
-  } else {
-    state.tasks.push(nextTask);
+  try {
+    if (syncRuntime.active) {
+      const saved = normalizeTask(await window.familyHubSync.saveTask(nextTask));
+      upsertTaskInState(saved);
+      cacheRemoteState(state);
+      render();
+    } else {
+      upsertTaskInState(nextTask);
+      saveLocalState();
+    }
+
+    dom.taskDialog.close();
+  } catch (error) {
+    handleSyncFailure(error, "That task could not be saved to the cloud.");
   }
-
-  dom.taskDialog.close();
-  saveState();
 }
 
-function deleteTask() {
+async function deleteTask() {
   const id = dom.taskId.value;
   if (!id) {
     return;
   }
 
-  state.tasks = state.tasks.filter((task) => task.id !== id);
-  dom.taskDialog.close();
-  saveState();
+  try {
+    if (syncRuntime.active) {
+      await window.familyHubSync.deleteTask(id);
+      state.tasks = state.tasks.filter((task) => task.id !== id);
+      cacheRemoteState(state);
+      render();
+    } else {
+      state.tasks = state.tasks.filter((task) => task.id !== id);
+      saveLocalState();
+    }
+
+    dom.taskDialog.close();
+  } catch (error) {
+    handleSyncFailure(error, "That task could not be deleted from the cloud.");
+  }
 }
 
-function copyPreviousWeekMeals() {
+async function copyPreviousWeekMeals() {
   const thisWeekStart = startOfWeek(mealWeekView);
   const previousWeekStart = addDays(thisWeekStart, -7);
   const mealsToCopy = [];
@@ -921,13 +1314,13 @@ function copyPreviousWeekMeals() {
       continue;
     }
 
-    mealsToCopy.push({
+    mealsToCopy.push(normalizeMeal({
       id: uid(),
       date: ymd(addDays(thisWeekStart, index)),
       name: source.name,
       notes: source.notes,
       ingredients: source.ingredients
-    });
+    }));
   }
 
   if (!mealsToCopy.length) {
@@ -941,10 +1334,24 @@ function copyPreviousWeekMeals() {
 
   state.meals = state.meals.filter((meal) => !isWithinWeek(parseDate(meal.date), thisWeekStart));
   state.meals.push(...mealsToCopy);
-  saveState();
+
+  if (syncRuntime.active) {
+    try {
+      await window.familyHubSync.replaceMeals(state.meals);
+      state = normalizeState(state);
+      cacheRemoteState(state);
+      render();
+    } catch (error) {
+      handleSyncFailure(error, "That weekly dinner plan could not be copied to the cloud.");
+      await refreshRemoteState({ keepMessage: true }).catch(() => {});
+    }
+    return;
+  }
+
+  saveLocalState();
 }
 
-function clearCurrentWeekMeals() {
+async function clearCurrentWeekMeals() {
   const weekStart = startOfWeek(mealWeekView);
   const weekHasMeals = state.meals.some((meal) => isWithinWeek(parseDate(meal.date), weekStart));
   if (!weekHasMeals) {
@@ -956,75 +1363,98 @@ function clearCurrentWeekMeals() {
   }
 
   state.meals = state.meals.filter((meal) => !isWithinWeek(parseDate(meal.date), weekStart));
-  saveState();
+
+  if (syncRuntime.active) {
+    try {
+      await window.familyHubSync.replaceMeals(state.meals);
+      state = normalizeState(state);
+      cacheRemoteState(state);
+      render();
+    } catch (error) {
+      handleSyncFailure(error, "That weekly dinner plan could not be cleared in the cloud.");
+      await refreshRemoteState({ keepMessage: true }).catch(() => {});
+    }
+    return;
+  }
+
+  saveLocalState();
 }
 
-function addGroceriesFromText(value) {
+async function addItemsToSharedList(value) {
   const items = splitGroceries(value);
   if (!items.length) {
     return 0;
   }
 
   const existing = new Set(state.groceries.map((item) => item.text.toLowerCase()));
-  let added = 0;
-
-  items.forEach((item) => {
-    const key = item.toLowerCase();
-    if (existing.has(key)) {
-      return;
+  const pending = new Set();
+  const newItems = items.reduce((collected, text) => {
+    const key = text.toLowerCase();
+    if (existing.has(key) || pending.has(key)) {
+      return collected;
     }
 
-    existing.add(key);
-    state.groceries.push({
-      id: uid(),
-      text: item,
-      done: false
-    });
-    added += 1;
-  });
+    pending.add(key);
+    collected.push(normalizeGrocery({ id: uid(), text, done: false }));
+    return collected;
+  }, []);
 
-  return added;
-}
-
-function importBackup(event) {
-  const [file] = event.target.files || [];
-  event.target.value = "";
-  if (!file) {
-    return;
+  if (!newItems.length) {
+    return 0;
   }
 
-  const reader = new FileReader();
-  reader.onload = () => {
+  if (syncRuntime.active) {
     try {
-      const parsed = JSON.parse(String(reader.result || ""));
-      const looksLikeFamilyHubBackup = ["events", "tasks", "groceries", "meals"].some((key) => Array.isArray(parsed[key]));
-      if (!looksLikeFamilyHubBackup) {
-        throw new Error("Backup is missing Family Hub lists.");
-      }
-
-      const nextState = normalizeState(parsed);
-      if (!window.confirm("Replace the current Family Hub data with this backup?")) {
-        return;
-      }
-
-      state = nextState;
-      saveState();
+      const savedItems = await window.familyHubSync.saveListItems(newItems);
+      savedItems.map(normalizeGrocery).forEach((item) => upsertGroceryInState(item));
+      cacheRemoteState(state);
+      render();
+      return savedItems.length;
     } catch (error) {
-      window.alert("That file could not be imported.");
+      handleSyncFailure(error, "Those list items could not be saved to the cloud.");
+      return 0;
     }
-  };
-  reader.readAsText(file);
+  }
+
+  state.groceries.push(...newItems);
+  saveLocalState();
+  return newItems.length;
 }
 
-function exportBackup() {
-  const payload = JSON.stringify(normalizeState(state), null, 2);
-  const blob = new Blob([payload], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `family-hub-backup-${ymd(new Date())}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+function upsertEventInState(event) {
+  const index = state.events.findIndex((item) => item.id === event.id);
+  if (index >= 0) {
+    state.events[index] = event;
+  } else {
+    state.events.push(event);
+  }
+  state = normalizeState(state);
+}
+
+function upsertMealInState(meal) {
+  state.meals = state.meals.filter((item) => item.id !== meal.id && item.date !== meal.date);
+  state.meals.push(meal);
+  state = normalizeState(state);
+}
+
+function upsertTaskInState(task) {
+  const index = state.tasks.findIndex((item) => item.id === task.id);
+  if (index >= 0) {
+    state.tasks[index] = task;
+  } else {
+    state.tasks.push(task);
+  }
+  state = normalizeState(state);
+}
+
+function upsertGroceryInState(grocery) {
+  const index = state.groceries.findIndex((item) => item.id === grocery.id);
+  if (index >= 0) {
+    state.groceries[index] = grocery;
+  } else {
+    state.groceries.push(grocery);
+  }
+  state = normalizeState(state);
 }
 
 function registerServiceWorker() {
@@ -1173,16 +1603,6 @@ function compareGroceries(left, right) {
   }
 
   return left.text.localeCompare(right.text);
-}
-
-function nextRepeatedDate(date, repeatType) {
-  if (repeatType === "daily") {
-    return addDays(date, 1);
-  }
-  if (repeatType === "weekly") {
-    return addDays(date, 7);
-  }
-  return addMonths(date, 1);
 }
 
 function splitGroceries(value) {
