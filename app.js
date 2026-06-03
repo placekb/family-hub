@@ -14,7 +14,6 @@ const $ = (id) => document.getElementById(id);
 
 const dom = {
   dateLine: $("dateLine"),
-  newBtn: $("newBtn"),
   syncStrip: $("syncStrip"),
   syncDot: $("syncDot"),
   syncLabel: $("syncLabel"),
@@ -114,7 +113,6 @@ bootstrapApp();
 registerServiceWorker();
 
 function bindEvents() {
-  dom.newBtn.addEventListener("click", () => openEventDialog({ date: ymd(new Date()) }));
   dom.seedCloudBtn.addEventListener("click", seedCloudFromLocal);
   dom.signOutBtn.addEventListener("click", signOutEverywhere);
   dom.authForm.addEventListener("submit", signInWithFamilyLogin);

@@ -17,28 +17,7 @@
   <div class="page-glow page-glow-b" aria-hidden="true"></div>
 
   <div class="app">
-    <header class="topbar">
-      <div class="headline">
-        <h1>Family Hub</h1>
-        <p class="small" id="dateLine"></p>
-      </div>
-
-      <div class="top-actions">
-        <button id="newBtn" type="button">+ Event</button>
-      </div>
-    </header>
-
-    <section class="sync-strip hidden" id="syncStrip" aria-live="polite">
-      <div class="sync-meta">
-        <span class="sync-dot" id="syncDot" aria-hidden="true"></span>
-        <span id="syncLabel">Cloud sync is off.</span>
-      </div>
-
-      <div class="sync-actions">
-        <button class="secondary small-button hidden" id="seedCloudBtn" type="button">Upload this device data</button>
-        <button class="secondary small-button" id="signOutBtn" type="button">Sign out</button>
-      </div>
-    </section>
+    <p class="top-date small" id="dateLine"></p>
 
     <main class="layout">
       <section class="panel calendar-panel">
@@ -133,6 +112,18 @@
         </section>
       </section>
     </main>
+
+    <section class="sync-strip hidden" id="syncStrip" aria-live="polite">
+      <div class="sync-meta">
+        <span class="sync-dot" id="syncDot" aria-hidden="true"></span>
+        <span id="syncLabel">Cloud sync is off.</span>
+      </div>
+
+      <div class="sync-actions">
+        <button class="secondary small-button hidden" id="seedCloudBtn" type="button">Upload this device data</button>
+        <button class="secondary small-button" id="signOutBtn" type="button">Sign out</button>
+      </div>
+    </section>
   </div>
 </div>
 
