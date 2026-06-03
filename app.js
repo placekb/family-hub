@@ -37,7 +37,6 @@ const dom = {
   prevWeekBtn: $("prevWeekBtn"),
   nextWeekBtn: $("nextWeekBtn"),
   copyWeekBtn: $("copyWeekBtn"),
-  clearWeekBtn: $("clearWeekBtn"),
   mealList: $("mealList"),
   taskList: $("taskList"),
   newTaskBtn: $("newTaskBtn"),
@@ -143,7 +142,6 @@ function bindEvents() {
   });
 
   dom.copyWeekBtn.addEventListener("click", copyPreviousWeekMeals);
-  dom.clearWeekBtn.addEventListener("click", clearCurrentWeekMeals);
   dom.newTaskBtn.addEventListener("click", () => openTaskDialog());
 
   dom.groceryForm.addEventListener("submit", addSharedListItem);
@@ -1341,35 +1339,6 @@ async function copyPreviousWeekMeals() {
       render();
     } catch (error) {
       handleSyncFailure(error, "That weekly dinner plan could not be copied to the cloud.");
-      await refreshRemoteState({ keepMessage: true }).catch(() => {});
-    }
-    return;
-  }
-
-  saveLocalState();
-}
-
-async function clearCurrentWeekMeals() {
-  const weekStart = startOfWeek(mealWeekView);
-  const weekHasMeals = state.meals.some((meal) => isWithinWeek(parseDate(meal.date), weekStart));
-  if (!weekHasMeals) {
-    return;
-  }
-
-  if (!window.confirm("Clear every planned dinner in this week?")) {
-    return;
-  }
-
-  state.meals = state.meals.filter((meal) => !isWithinWeek(parseDate(meal.date), weekStart));
-
-  if (syncRuntime.active) {
-    try {
-      await window.familyHubSync.replaceMeals(state.meals);
-      state = normalizeState(state);
-      cacheRemoteState(state);
-      render();
-    } catch (error) {
-      handleSyncFailure(error, "That weekly dinner plan could not be cleared in the cloud.");
       await refreshRemoteState({ keepMessage: true }).catch(() => {});
     }
     return;
