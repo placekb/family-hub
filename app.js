@@ -29,7 +29,10 @@ const dom = {
   prevMonth: $("prevMonth"),
   nextMonth: $("nextMonth"),
   calendarGrid: $("calendarGrid"),
+  overviewKicker: $("overviewKicker"),
+  overviewTitle: $("overviewTitle"),
   todayEvents: $("todayEvents"),
+  overviewAddEventBtn: $("overviewAddEventBtn"),
   workspaceTitle: $("workspaceTitle"),
   tabButtons: [...document.querySelectorAll(".tab-button")],
   tabPanels: [...document.querySelectorAll(".tab-panel")],
@@ -93,6 +96,7 @@ let state = normalizeState({});
 let localSeedState = normalizeState({});
 let monthView = startOfMonth(new Date());
 let mealWeekView = startOfWeek(new Date());
+let overviewDate = atStartOfDay(new Date());
 let activeTab = "meals";
 let remoteRefreshTimer = null;
 let authSessionEpoch = 0;
@@ -130,6 +134,8 @@ function bindEvents() {
     monthView = addMonths(monthView, 1);
     render();
   });
+
+  dom.overviewAddEventBtn.addEventListener("click", () => openEventDialog({ date: ymd(overviewDate) }));
 
   dom.prevWeekBtn.addEventListener("click", () => {
     mealWeekView = addDays(mealWeekView, -7);
@@ -680,8 +686,8 @@ function renderCalendar() {
 
     cells.push(`
       <article
-        class="day-card${date.getMonth() !== monthView.getMonth() ? " other-month" : ""}${sameDay(date, new Date()) ? " today" : ""}"
-        data-action="new-event"
+        class="day-card${date.getMonth() !== monthView.getMonth() ? " other-month" : ""}${sameDay(date, new Date()) ? " today" : ""}${sameDay(date, overviewDate) ? " selected" : ""}"
+        data-action="select-day"
         data-date="${dateString}"
       >
         <div class="day-top">
@@ -698,11 +704,17 @@ function renderCalendar() {
 }
 
 function renderOverview() {
-  const today = new Date();
-  const todayEvents = eventsForDate(today);
+  const selectedDate = atStartOfDay(overviewDate);
+  const isToday = sameDay(selectedDate, new Date());
+  const selectedDateLabel = formatOverviewDate(selectedDate);
+  const selectedDateEvents = eventsForDate(selectedDate);
 
-  dom.todayEvents.innerHTML = todayEvents.length
-    ? todayEvents
+  dom.overviewKicker.textContent = isToday ? "Today" : "Selected day";
+  dom.overviewTitle.textContent = isToday ? "Today's events" : `Events for ${selectedDateLabel}`;
+  dom.overviewAddEventBtn.setAttribute("aria-label", `Add event for ${selectedDateLabel}`);
+
+  dom.todayEvents.innerHTML = selectedDateEvents.length
+    ? selectedDateEvents
         .map(
           (event) => `
             <div class="list-item compact-item">
@@ -719,7 +731,11 @@ function renderOverview() {
           `
         )
         .join("")
-    : `<div class="empty">No events on the calendar today.</div>`;
+    : `<div class="empty">${
+        isToday
+          ? "No events on the calendar today."
+          : `No events scheduled for ${escapeHtml(selectedDateLabel)}.`
+      }</div>`;
 }
 
 function renderWorkspace() {
@@ -852,16 +868,24 @@ function handleCalendarClick(event) {
     return;
   }
 
+  const dayCard = target.closest(".day-card");
+  const clickedDate = dayCard ? parseDate(dayCard.dataset.date) : null;
+
   if (target.dataset.action === "edit-event") {
     const found = state.events.find((item) => item.id === target.dataset.id);
     if (found) {
+      if (clickedDate) {
+        overviewDate = clickedDate;
+        render();
+      }
       openEventDialog(found);
     }
     return;
   }
 
-  if (target.dataset.action === "new-event") {
-    openEventDialog({ date: target.dataset.date });
+  if (target.dataset.action === "select-day" && clickedDate) {
+    overviewDate = clickedDate;
+    render();
   }
 }
 
@@ -1640,6 +1664,14 @@ function formatWeekRange(start, end) {
   }
 
   return `${start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+}
+
+function formatOverviewDate(date) {
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric"
+  });
 }
 
 function formatTimeLabel(value, compact) {
